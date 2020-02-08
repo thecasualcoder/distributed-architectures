@@ -10,15 +10,19 @@ import (
 	"log"
 	"net"
 	"os"
+	"path"
+	"strings"
 	"testing"
 	"time"
 )
 
 type DevServer struct {
-	ports  config.Ports
-	t      *testing.T
-	agent  *agent.Agent
-	stderr io.Writer
+	ports        config.Ports
+	t            *testing.T
+	agent        *agent.Agent
+	stderr       io.Writer
+	client       *api.Client
+	consulConfig *api.Config
 }
 
 func NewDevServer(t *testing.T) *DevServer {
@@ -80,6 +84,9 @@ func (d *DevServer) Start() {
 		assert.Failf(d.t, "failed to create client for consul: %s", err.Error())
 		return
 	}
+	d.client = client
+	d.consulConfig = defaultConfig
+
 	status := client.Status()
 	waitIndex := 0
 	const limit = 100
@@ -99,6 +106,10 @@ func (d *DevServer) Start() {
 	d.agent = devAgent
 }
 
+func (d *DevServer) ConsulConfig() *api.Config {
+	return d.consulConfig
+}
+
 func (d *DevServer) HTTPPort() int {
 	return *d.ports.HTTP
 }
@@ -110,6 +121,51 @@ func (d *DevServer) Stop() {
 			assert.Failf(d.t, "failed to stop agent: %s", err.Error())
 		}
 	}
+}
+
+func (d *DevServer) Put(basePath, key string, value []byte) error {
+	key = path.Join(basePath, key)
+	kvPair := &api.KVPair{
+		Key:   key,
+		Value: value,
+	}
+	_, err := d.client.KV().Put(kvPair, nil)
+	if err != nil {
+		return fmt.Errorf("error creating/updating key %s: %v", key, err)
+	}
+	return nil
+}
+
+func (d *DevServer) Delete(basePath, key string) error {
+	key = path.Join(basePath, key)
+	_, err := d.client.KV().Delete(key, nil)
+	if err != nil {
+		return fmt.Errorf("error deleting key %s: %v", key, err)
+	}
+	return nil
+}
+
+func (d *DevServer) Get(basePath, key string) ([]byte, error) {
+	key = path.Join(basePath, key)
+
+	kvPair, _, err := d.client.KV().Get(key, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error getting %s: %v", key, err)
+	}
+	return kvPair.Value, nil
+}
+
+func (d *DevServer) List(basePath string) ([]string, error) {
+	kvPairs, _, err := d.client.KV().List(basePath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error getting keys from consul: %v", err)
+	}
+
+	result := make([]string, 0, len(kvPairs))
+	for _, pair := range kvPairs {
+		result = append(result, strings.TrimPrefix(pair.Key, basePath))
+	}
+	return result, nil
 }
 
 // getFreePort returns a free available port from the system
